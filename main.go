@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/csv"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
@@ -18,23 +20,32 @@ type parsedJob struct {
 	summary  string
 }
 
-var source_URL string = "https://kr.indeed.com/취업?q=python&limit=50"
+var sourceURL string = "https://kr.indeed.com/취업?q=python&limit=50"
 
 func main() {
+	c := make(chan []parsedJob)
 	var jobs []parsedJob
 	totalPgs := getPages()
 
 	for i := 0; i < totalPgs; i++ {
-		parsedJob := getPage(i)
-		jobs = append(jobs, parsedJob...)
+		go getPage(i, c)
 
 	}
-	fmt.Println(jobs)
+
+	for i := 0; i < totalPgs; i++ {
+		parsedJob := <-c
+		jobs = append(jobs, parsedJob...)
+	}
+
+	createcsv(jobs)
+	fmt.Println("Extraction Success", len(jobs))
 
 }
-func getPage(page int) []parsedJob {
+
+func getPage(page int, mainC chan<- []parsedJob) {
 	var jobs []parsedJob
-	pageURL := source_URL + "&start=" + strconv.Itoa(page*50)
+	c := make(chan parsedJob)
+	pageURL := sourceURL + "&start=" + strconv.Itoa(page*50)
 	fmt.Println("Requesting", pageURL)
 	res, err := http.Get(pageURL)
 	checkErr(err)
@@ -48,22 +59,26 @@ func getPage(page int) []parsedJob {
 	pullCards := doc.Find(".jobsearch-SerpJobCard")
 
 	pullCards.Each(func(i int, card *goquery.Selection) {
-		job := extractCard(card)
-		jobs = append(jobs, job)
+		go extractCard(card, c)
 
 	})
 
-	return jobs
+	for i := 0; i < pullCards.Length(); i++ {
+		job := <-c
+		jobs = append(jobs, job)
+	}
+
+	mainC <- jobs
 
 }
 
-func extractCard(card *goquery.Selection) parsedJob {
+func extractCard(card *goquery.Selection, c chan<- parsedJob) {
 	id, _ := card.Attr("data-jk")
 	title := cleanStr(card.Find(".title>a").Text())
 	location := cleanStr(card.Find(".sjcl").Text())
 	salary := cleanStr(card.Find(".salaryText").Text())
 	summary := cleanStr(card.Find(".summary").Text())
-	return parsedJob{id: id, title: title, location: location, salary: salary, summary: summary}
+	c <- parsedJob{id: id, title: title, location: location, salary: salary, summary: summary}
 
 }
 
@@ -73,7 +88,7 @@ func cleanStr(str string) string {
 
 func getPages() int {
 	pages := 0
-	res, err := http.Get(source_URL)
+	res, err := http.Get(sourceURL)
 	checkErr(err)
 	checkCode(res)
 
@@ -86,6 +101,27 @@ func getPages() int {
 	})
 
 	return pages
+
+}
+
+func createcsv(jobs []parsedJob) {
+	file, err := os.Create("list_of_jobs.csv")
+	checkErr(err)
+
+	w := csv.NewWriter(file)
+	defer w.Flush()
+
+	headers := []string{"Link", "Title", "Location", "Salary", "Summary"}
+
+	wErr := w.Write(headers)
+	checkErr(wErr)
+
+	for _, job := range jobs {
+		jobSline := []string{job.id, job.title, job.location, job.salary, job.summary}
+		jwErr := w.Write(jobSline)
+		checkErr(jwErr)
+
+	}
 
 }
 
